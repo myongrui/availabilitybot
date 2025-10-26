@@ -5,10 +5,11 @@ import requests
 import threading
 from threading import Timer
 import time
-import pickle
+import subprocess
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.firefox.options import Options
+#from selenium.webdriver.firefox.options import Options
+from selenium.webdriver.chrome.options import Options
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -16,32 +17,32 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# Telegram API endpoint
 url = f'https://api.telegram.org/bot{BOT_TOKEN}/sendMessage'
 
-# Payload
-payload = {
-    'chat_id': CHAT_ID,
-    'text': "Lesson Available!"
-}
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 
-profile_path = os.getenv("profile_path")
+# profile_path = os.getenv("profile_path")
+# options = Options()
+# options.set_preference("profile", profile_path)
+
+# driver = webdriver.Firefox(options=options)
+# driver.get("https://booking.bbdc.sg/#/booking/chooseSlot?courseType=3A&insInstructorId=&instructorType=")
+
+# command = "chrome.exe --remote-debugging-port=9222 --user-data-dir=C:/ChromeData"  
+# target_directory = r"C:/Program Files/Google/Chrome/Application"
+# result = subprocess.Popen(command, cwd=target_directory, shell=True)
+
 options = Options()
-options.set_preference("profile", profile_path)
-
-driver = webdriver.Firefox(options=options)
+options.add_experimental_option("debuggerAddress", "localhost:9222")
+driver = webdriver.Chrome(options=options)
 driver.get("https://booking.bbdc.sg/#/booking/chooseSlot?courseType=3A&insInstructorId=&instructorType=")
-
-time.sleep(60)
 
 def find_booking(driver):
 
-    calendar = driver.find_element(By.CSS_SELECTOR, ".v-calendar-monthly")
-    button = None
-
     try:
+        calendar = driver.find_element(By.CSS_SELECTOR, ".v-calendar-monthly")
+        button = None
         button = calendar.find_element(By.TAG_NAME, "button")
         logging.info("Booking Found")
         return True
@@ -69,30 +70,34 @@ def Checker(thread):
             print(f'Failed to send notification: {response.text}')
 
         time.sleep(3600)
-
-
-def startBot():
+    
 
     payload = {
         'chat_id': CHAT_ID,
-        'text': "Bot is now online!"
-    }
-
+        'text': "Bot stopped working... 😢"  
+        }
+    
     response = requests.post(url, data=payload)
+
+def startBot():
 
     while True:
 
         logging.info("Refreshing page...")
         driver.refresh()
-        time.sleep(60)
+        time.sleep(90)
 
         found = find_booking(driver)
 
         if found:
-            # Send the message
+            
+            payload = {
+                'chat_id': CHAT_ID,
+                'text': "Lesson Available!"
+            }
+
             response = requests.post(url, data=payload)
 
-            # Check result
             if response.status_code == 200:
                 print('Notification sent successfully!')
             else:
