@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import logging
 import requests
@@ -42,10 +43,26 @@ def find_booking(driver):
 
     try:
         calendar = driver.find_element(By.CSS_SELECTOR, ".v-calendar-monthly")
-        button = None
         button = calendar.find_element(By.TAG_NAME, "button")
         logging.info("Booking Found")
         return True
+    
+    except Exception as e:
+        pass
+
+    try:
+        loginfield = driver.find_element(By.CLASS_NAME, "v-text-field__slot")
+
+        logging.info("Back at Login Page...")
+        payload = {
+        'chat_id': CHAT_ID,
+        'text': "Stuck at Login Page"
+        }
+        response = requests.post(url, data=payload)
+
+        sys.exit(0)
+
+        return False
     
     except Exception as e:
         pass
@@ -85,8 +102,7 @@ def startBot():
 
         logging.info("Refreshing page...")
         driver.refresh()
-        time.sleep(90)
-
+        time.sleep(60)
         found = find_booking(driver)
 
         if found:
@@ -97,11 +113,15 @@ def startBot():
             }
 
             response = requests.post(url, data=payload)
+            response = requests.post(url, data=payload)
+            response = requests.post(url, data=payload)
 
             if response.status_code == 200:
                 print('Notification sent successfully!')
             else:
                 print(f'Failed to send notification: {response.text}')
+
+            time.sleep(180)
 
 main = threading.Thread(target = startBot)
 tracker = threading.Thread(target = Checker, args=(main,))
