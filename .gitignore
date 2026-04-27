@@ -1,2 +1,6 @@
 .env
 test.py
+test_api.py
+tempCodeRunnerFile.py
+chrome_profile_bbdc/
+.claude/
