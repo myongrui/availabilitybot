@@ -1,7 +1,8 @@
-import time
 import re
 import json
 import os
+import time
+import requests
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 
@@ -68,10 +69,11 @@ jsessionid    = req_headers.get("jsessionid", "")
 auth_token  = re.sub(r"^Bearer\s+", "", authorization).strip()
 jsess_token = re.sub(r"^Bearer\s+", "", jsessionid).strip()
 
-try:
-    driver.quit()
-except Exception:
-    pass
+# Fall back to browser cookie store if network log didn't capture Cookie header
+if not cookie_header:
+    browser_cookies = driver.get_cookies()
+    cookie_header = "; ".join(f"{c['name']}={c['value']}" for c in browser_cookies)
+    print(f"Cookie header not in network log — pulled {len(browser_cookies)} cookies from browser store")
 
 print(f"\nCaptured request: {api_request['url']}")
 print(f"  Cookie header length: {len(cookie_header)}")
@@ -101,3 +103,52 @@ print("\n.env updated!")
 print("  BBDC_COOKIES (raw Cookie header — includes bbdc-token, visid_incap_*, incap_ses_*, etc.)")
 print("  BBDC_TOKEN")
 print("  BBDC_JSESSIONID")
+
+# --- Test API with captured credentials ---
+from dotenv import load_dotenv
+load_dotenv()
+
+TOKEN      = os.getenv("BBDC_TOKEN", "")
+JSESSIONID = os.getenv("BBDC_JSESSIONID", "")
+COOKIES_RAW = os.getenv("BBDC_COOKIES", "")
+
+cookies_dict = dict(
+    pair.split("=", 1) for pair in COOKIES_RAW.split("; ") if "=" in pair
+) if COOKIES_RAW else {}
+
+print("\n--- Testing API with .env credentials ---")
+resp = requests.post(
+    "https://booking.bbdc.sg/bbdc-back-service/api/booking/c3practical/listC3PracticalSlotReleased",
+    headers={
+        "authorization": f"Bearer {TOKEN}",
+        "jsessionid":    f"Bearer {JSESSIONID}",
+        "content-type":  "application/json",
+        "origin":        "https://booking.bbdc.sg",
+        "referer":       "https://booking.bbdc.sg/",
+        "user-agent":    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+    },
+    cookies=cookies_dict,
+    json={"courseType": "3A", "stageSubDesc": "Practical Lesson", "subVehicleType": None, "subStageSubNo": None},
+    timeout=15
+)
+
+print(f"Status: {resp.status_code}")
+try:
+    data = resp.json()
+    print(f"success: {data.get('success')}")
+    slots = (data.get('data') or {}).get('releasedSlotListGroupByDay')
+    print(f"slots:   {slots}")
+except Exception:
+    print("Not JSON (likely WAF blocked):")
+    print(resp.text[:500])
+
+print("\nKeeping browser open for 5 minutes to preserve session state...")
+for remaining in range(300, 0, -10):
+    print(f"  Closing in {remaining}s...", end="\r")
+    time.sleep(10)
+
+print("\nClosing browser.")
+try:
+    driver.quit()
+except Exception:
+    pass
