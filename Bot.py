@@ -231,7 +231,7 @@ def init_browser():
     })
     driver.set_script_timeout(30)
 
-    driver.get("https://booking.bbdc.sg")
+    driver.get("https://booking.bbdc.sg/#/booking/chooseSlot?courseType=3A")
     time.sleep(3)
     auto_login(driver)
     logging.info("Waiting for login to complete (solve captcha if prompted)...")
@@ -242,6 +242,7 @@ def init_browser():
         time.sleep(2)
 
     logging.info("Logged in. Loading booking page...")
+    time.sleep(5)
     driver.get(BOOKING_URL)
     logging.info("Waiting for booking page to load...")
     time.sleep(10)
@@ -301,8 +302,16 @@ def call_api(auth, jsess, cookie_str, url, payload):
     return session.post(url, headers=headers, cookies=cookies, json=payload, timeout=15)
 
 
+_cached_headers = (None, None, None)
+_headers_captured_at = 0.0
+HEADER_TTL = 600  # refresh headers every 10 minutes
+
 def find_booking(driver):
-    auth, jsess, cookie_str = capture_headers(driver)
+    global _cached_headers, _headers_captured_at
+    if time.time() - _headers_captured_at >= HEADER_TTL:
+        _cached_headers = capture_headers(driver)
+        _headers_captured_at = time.time()
+    auth, jsess, cookie_str = _cached_headers
 
     if not auth:
         logging.error("Could not capture headers — falling back to in-browser fetch")

@@ -4,3 +4,4 @@ chrome_profile_bbdc/
 test.py
 tempCodeRunnerFile.py
 captcha_debug.png
+*.stackdump

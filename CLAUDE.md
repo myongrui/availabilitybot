@@ -98,7 +98,7 @@ Headers used:
 ## Key Implementation Details
 
 - **Dual API strategy**: `find_booking()` tries `requests.post()` with headers captured from network traffic. On non-JSON (WAF block), falls back to `find_booking_js()` which runs `fetch()` inside the browser via `execute_async_script`. The JS fallback always bypasses WAF since it runs in the live page session.
-- **Network header capture**: `capture_headers()` refreshes the booking page, waits 8s for API calls to fire, reads CDP performance logs, and returns the last captured BBDC API request's headers (last = freshest cookies).
+- **Network header capture**: `capture_headers()` refreshes the booking page, waits 8s for API calls to fire, reads CDP performance logs, and returns the last captured BBDC API request's headers (last = freshest cookies). Headers are cached for 10 minutes (`HEADER_TTL = 600`) — the page is only refreshed once per TTL window, not on every 60s poll.
 - **`trust_env=False`**: All `requests` calls to BBDC use a Session with `trust_env=False` to bypass system proxy settings that would route to `127.0.0.1`.
 - **Tesseract captcha solver**: 9 preprocessing configs (scale 2x/3x, threshold 100–160, psm 7/8/13) all run; consensus vote wins. Results of length 4–8 chars are preferred. Each config is wrapped in try/except so one bad call can't abort the login.
 - **Persistent profile**: `./chrome_profile_bbdc/` survives restarts. BBDC rate-limits re-logins, so minimize deleting this folder.
