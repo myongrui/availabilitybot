@@ -209,37 +209,28 @@ def auto_login(driver):
         try:
             driver.find_element(By.XPATH, "//a[contains(text(),'Refresh')]").click()
             time.sleep(2)
-            cover_el = driver.find_element(
-                By.XPATH,
-                "//div[contains(@class,'form-captcha-image')]//div[contains(@class,'v-image__image--cover')]"
-            )
-            style = cover_el.get_attribute('style')
-            m = re.search(r'url\("data:image/png;base64,([^"]+)"\)', style)
-            if m:
-                captcha_bytes = base64.b64decode(m.group(1))
-                send_telegram_photo(captcha_bytes, "Captcha required — reply with the captcha text (2 min timeout):")
-                logging.info("Captcha image sent to Telegram. Waiting for reply...")
-                answer = wait_for_telegram_reply(timeout=120)
-                if answer:
-                    captcha_field = driver.find_element(
-                        By.XPATH,
-                        "//div[contains(@class,'v-text-field__slot')][.//label[contains(text(),'Captcha')]]//input"
-                    )
-                    driver.execute_script("arguments[0].value = '';", captcha_field)
-                    captcha_field.send_keys(Keys.CONTROL + 'a')
-                    captcha_field.send_keys(Keys.DELETE)
-                    captcha_field.send_keys(answer)
-                    driver.find_element(By.XPATH, "//button[.//span[contains(text(),'Verify')]]").click()
-                    time.sleep(2)
-                    if not driver.find_elements(By.XPATH, "//a[contains(text(),'Refresh')]"):
-                        logging.info("Manual captcha solved. Login complete.")
-                        return
-                    logging.warning("Manual captcha answer was incorrect.")
-                    send_telegram("Captcha answer was wrong — please restart the bot.")
-                else:
-                    send_telegram("Captcha timeout — no reply in 2 minutes. Please restart the bot.")
+            screenshot = driver.get_screenshot_as_png()
+            send_telegram_photo(screenshot, "Captcha required — reply with the captcha text (2 min timeout):")
+            logging.info("Captcha screenshot sent to Telegram. Waiting for reply...")
+            answer = wait_for_telegram_reply(timeout=120)
+            if answer:
+                captcha_field = driver.find_element(
+                    By.XPATH,
+                    "//div[contains(@class,'v-text-field__slot')][.//label[contains(text(),'Captcha')]]//input"
+                )
+                driver.execute_script("arguments[0].value = '';", captcha_field)
+                captcha_field.send_keys(Keys.CONTROL + 'a')
+                captcha_field.send_keys(Keys.DELETE)
+                captcha_field.send_keys(answer)
+                driver.find_element(By.XPATH, "//button[.//span[contains(text(),'Verify')]]").click()
+                time.sleep(2)
+                if not driver.find_elements(By.XPATH, "//a[contains(text(),'Refresh')]"):
+                    logging.info("Manual captcha solved. Login complete.")
+                    return
+                logging.warning("Manual captcha answer was incorrect.")
+                send_telegram("Captcha answer was wrong — please restart the bot.")
             else:
-                logging.warning("Could not extract captcha image for Telegram.")
+                send_telegram("Captcha timeout — no reply in 2 minutes. Please restart the bot.")
         except Exception as e:
             logging.warning(f"Manual captcha via Telegram failed: {e}")
     except Exception as e:
@@ -379,12 +370,15 @@ def call_api(auth, jsess, cookie_str, url, payload):
 
 
 _cached_headers = (None, None, None)
+_headers_captured_at = 0.0
+HEADER_TTL = 900  # refresh browser every 15 minutes
 
 def find_booking(driver):
-    global _cached_headers
-    if not _cached_headers[0]:
+    global _cached_headers, _headers_captured_at
+    if not _cached_headers[0] or time.time() - _headers_captured_at >= HEADER_TTL:
         _cached_headers = capture_headers(driver)
-    auth, jsess, cookie_str = _cached_headers
+        _headers_captured_at = time.time()
+1    auth, jsess, cookie_str = _cached_headers
 
     if not auth:
         logging.error("Could not capture headers — falling back to in-browser fetch")
@@ -484,6 +478,7 @@ def startBot(driver):
         _last_check_time = time.time()
         if find_booking(driver):
             _last_check_result = "slots available"
+            driver.get(BOOKING_URL)
             send_telegram("Lesson Available!")
             _force_check.wait(timeout=180)
         else:
