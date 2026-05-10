@@ -56,8 +56,8 @@ Reads credentials from `.env` and fires one API call. Useful for verifying crede
 ## Architecture
 
 **`Bot.py`** — Main runtime entrypoint. Launches Chrome with a persistent profile, auto-logs in, navigates to the booking page, and runs two threads:
-- `startBot()` — polls every 60s via `find_booking()`. Tries `capture_headers()` + `call_api()` (requests-based) first; falls back to `find_booking_js()` (in-browser fetch) if WAF blocks. Sends Telegram alerts when slots are found, then waits 180s.
-- `Checker()` — health monitor, sends an hourly heartbeat Telegram message; sends a "stopped" alert if the main thread dies.
+- `startBot()` — polls every 60s via `find_booking()`. Tries `capture_headers()` + `call_api()` (requests-based) first; falls back to `find_booking_js()` (in-browser fetch) if WAF blocks. Uses `threading.Event.wait()` so `/check` can wake it immediately.
+- `Checker()` — polls Telegram `getUpdates` every 5s for commands (`/status`, `/check`, `/stop`); sends an hourly heartbeat; sends a "stopped" alert if the main thread dies.
 
 **`refresh.py`** — Captures fresh credentials from the browser's network traffic and writes them to `.env`. Also tests the API with the captured credentials. Run this when the bot reports session errors or to pre-populate `.env` for `test_api.py`.
 
@@ -77,7 +77,8 @@ Reads credentials from `.env` and fires one API call. Useful for verifying crede
 7. Extracts captcha image from `form-captcha-image` CSS background-image (base64 PNG)
 8. Runs 9 Tesseract configs (varying scale/threshold/psm) and uses consensus result
 9. Up to 5 attempts — refreshes captcha and retries on wrong answer
-10. Once logged in (`bbdc-token` cookie present), navigates to booking page
+10. If all 5 fail: refreshes captcha once more, sends the image to Telegram via `sendPhoto`, waits up to 120s for a text reply via `getUpdates`, enters the reply and submits
+11. Once logged in (`bbdc-token` cookie present), navigates to booking page
 
 ## API Endpoints
 
@@ -98,7 +99,7 @@ Headers used:
 ## Key Implementation Details
 
 - **Dual API strategy**: `find_booking()` tries `requests.post()` with headers captured from network traffic. On non-JSON (WAF block), falls back to `find_booking_js()` which runs `fetch()` inside the browser via `execute_async_script`. The JS fallback always bypasses WAF since it runs in the live page session.
-- **Network header capture**: `capture_headers()` refreshes the booking page, waits 8s for API calls to fire, reads CDP performance logs, and returns the last captured BBDC API request's headers (last = freshest cookies). Headers are cached for 10 minutes (`HEADER_TTL = 600`) — the page is only refreshed once per TTL window, not on every 60s poll.
+- **Network header capture**: `capture_headers()` refreshes the booking page, waits 8s for API calls to fire, reads CDP performance logs, and returns the last captured BBDC API request's headers (last = freshest cookies). Headers are cached indefinitely — the page is only refreshed on first run or after a WAF/parse error invalidates the cache.
 - **`trust_env=False`**: All `requests` calls to BBDC use a Session with `trust_env=False` to bypass system proxy settings that would route to `127.0.0.1`.
 - **Tesseract captcha solver**: 9 preprocessing configs (scale 2x/3x, threshold 100–160, psm 7/8/13) all run; consensus vote wins. Results of length 4–8 chars are preferred. Each config is wrapped in try/except so one bad call can't abort the login.
 - **Persistent profile**: `./chrome_profile_bbdc/` survives restarts. BBDC rate-limits re-logins, so minimize deleting this folder.

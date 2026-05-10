@@ -205,7 +205,43 @@ def auto_login(driver):
                 logging.info("Captcha solved. Login complete.")
                 return
 
-        logging.warning("All captcha attempts failed — please solve manually.")
+        logging.warning("All captcha attempts failed — requesting manual captcha via Telegram...")
+        try:
+            driver.find_element(By.XPATH, "//a[contains(text(),'Refresh')]").click()
+            time.sleep(2)
+            cover_el = driver.find_element(
+                By.XPATH,
+                "//div[contains(@class,'form-captcha-image')]//div[contains(@class,'v-image__image--cover')]"
+            )
+            style = cover_el.get_attribute('style')
+            m = re.search(r'url\("data:image/png;base64,([^"]+)"\)', style)
+            if m:
+                captcha_bytes = base64.b64decode(m.group(1))
+                send_telegram_photo(captcha_bytes, "Captcha required — reply with the captcha text (2 min timeout):")
+                logging.info("Captcha image sent to Telegram. Waiting for reply...")
+                answer = wait_for_telegram_reply(timeout=120)
+                if answer:
+                    captcha_field = driver.find_element(
+                        By.XPATH,
+                        "//div[contains(@class,'v-text-field__slot')][.//label[contains(text(),'Captcha')]]//input"
+                    )
+                    driver.execute_script("arguments[0].value = '';", captcha_field)
+                    captcha_field.send_keys(Keys.CONTROL + 'a')
+                    captcha_field.send_keys(Keys.DELETE)
+                    captcha_field.send_keys(answer)
+                    driver.find_element(By.XPATH, "//button[.//span[contains(text(),'Verify')]]").click()
+                    time.sleep(2)
+                    if not driver.find_elements(By.XPATH, "//a[contains(text(),'Refresh')]"):
+                        logging.info("Manual captcha solved. Login complete.")
+                        return
+                    logging.warning("Manual captcha answer was incorrect.")
+                    send_telegram("Captcha answer was wrong — please restart the bot.")
+                else:
+                    send_telegram("Captcha timeout — no reply in 2 minutes. Please restart the bot.")
+            else:
+                logging.warning("Could not extract captcha image for Telegram.")
+        except Exception as e:
+            logging.warning(f"Manual captcha via Telegram failed: {e}")
     except Exception as e:
         logging.warning(f"Auto-login skipped (fill manually): {e}")
 
@@ -215,6 +251,46 @@ def send_telegram(text):
         requests.post(TELEGRAM_URL, data={'chat_id': CHAT_ID, 'text': text}, proxies=NO_PROXY, timeout=10)
     except Exception as e:
         logging.error(f"Telegram send failed: {e}")
+
+
+def send_telegram_photo(image_bytes, caption=""):
+    try:
+        url = f'https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto'
+        files = {'photo': ('captcha.png', image_bytes, 'image/png')}
+        data = {'chat_id': CHAT_ID, 'caption': caption}
+        requests.post(url, files=files, data=data, proxies=NO_PROXY, timeout=15)
+    except Exception as e:
+        logging.error(f"Telegram photo send failed: {e}")
+
+
+def wait_for_telegram_reply(timeout=120):
+    """Poll getUpdates for a text reply from CHAT_ID, ignoring messages before this call."""
+    updates_url = f'https://api.telegram.org/bot{BOT_TOKEN}/getUpdates'
+    try:
+        resp = requests.get(updates_url, params={'timeout': 0}, proxies=NO_PROXY, timeout=15)
+        past = resp.json().get('result', [])
+        offset = (past[-1]['update_id'] + 1) if past else None
+    except Exception:
+        offset = None
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            params = {'timeout': 0}
+            if offset is not None:
+                params['offset'] = offset
+            resp = requests.get(updates_url, params=params, proxies=NO_PROXY, timeout=15)
+            for update in resp.json().get('result', []):
+                offset = update['update_id'] + 1
+                msg = update.get('message', {})
+                if str(msg.get('chat', {}).get('id')) == str(CHAT_ID):
+                    text = msg.get('text', '').strip()
+                    if text and not text.startswith('/'):
+                        return text
+        except Exception as e:
+            logging.error(f"getUpdates failed: {e}")
+        time.sleep(3)
+    return None
 
 
 def init_browser():
@@ -240,7 +316,7 @@ def init_browser():
         if 'bbdc-token' in cookies:
             break
         time.sleep(2)
-
+   
     logging.info("Logged in. Loading booking page...")
     time.sleep(5)
     driver.get(BOOKING_URL)
@@ -303,14 +379,11 @@ def call_api(auth, jsess, cookie_str, url, payload):
 
 
 _cached_headers = (None, None, None)
-_headers_captured_at = 0.0
-HEADER_TTL = 600  # refresh headers every 10 minutes
 
 def find_booking(driver):
-    global _cached_headers, _headers_captured_at
-    if time.time() - _headers_captured_at >= HEADER_TTL:
+    global _cached_headers
+    if not _cached_headers[0]:
         _cached_headers = capture_headers(driver)
-        _headers_captured_at = time.time()
     auth, jsess, cookie_str = _cached_headers
 
     if not auth:
@@ -327,6 +400,11 @@ def find_booking(driver):
 
     if list_resp.status_code != 200:
         logging.error(f"HTTP {list_resp.status_code} — list: {list_resp.text[:300]}")
+        body_start = list_resp.text[:200].lower()
+        if list_resp.status_code in (503, 429) or '<html' in body_start:
+            logging.info("WAF block detected — invalidating header cache and falling back to in-browser fetch...")
+            _cached_headers = (None, None, None)
+            return find_booking_js(driver)
         send_telegram("Session blocked — restart Bot.py and re-login")
         sys.exit(1)
 
@@ -334,7 +412,8 @@ def find_booking(driver):
         list_data = list_resp.json()
     except ValueError:
         logging.error(f"Non-JSON response (WAF?) — list: {list_resp.text[:300]}")
-        logging.info("Falling back to in-browser fetch...")
+        logging.info("Invalidating header cache and falling back to in-browser fetch...")
+        _cached_headers = (None, None, None)
         return find_booking_js(driver)
 
     if not list_data.get('success'):
@@ -393,24 +472,67 @@ def find_booking_js(driver):
     return False
 
 
+_force_check = threading.Event()
+_last_check_time   = 0.0
+_last_check_result = "not checked yet"
+
+
 def startBot(driver):
+    global _last_check_time, _last_check_result
     while True:
         logging.info("Checking API...")
+        _last_check_time = time.time()
         if find_booking(driver):
+            _last_check_result = "slots available"
             send_telegram("Lesson Available!")
-            time.sleep(180)
+            _force_check.wait(timeout=180)
         else:
-            time.sleep(60)
+            _last_check_result = "no slots"
+            _force_check.wait(timeout=60)
+        _force_check.clear()
 
 
 def Checker(thread):
+    updates_url = f'https://api.telegram.org/bot{BOT_TOKEN}/getUpdates'
+    offset = None
+    last_heartbeat = time.time()
+
     while thread.is_alive():
-        send_telegram("BOT 🟢")
-        time.sleep(3600)
+        if time.time() - last_heartbeat >= 3600:
+            send_telegram("BOT 🟢")
+            last_heartbeat = time.time()
+
+        try:
+            params = {'timeout': 0}
+            if offset is not None:
+                params['offset'] = offset
+            resp = requests.get(updates_url, params=params, proxies=NO_PROXY, timeout=15)
+            for update in resp.json().get('result', []):
+                offset = update['update_id'] + 1
+                msg = update.get('message', {})
+                if str(msg.get('chat', {}).get('id')) != str(CHAT_ID):
+                    continue
+                cmd = msg.get('text', '').strip()
+                if cmd == '/status':
+                    ago = int(time.time() - _last_check_time) if _last_check_time else None
+                    body = f"Running\nLast check: {ago}s ago — {_last_check_result}" if ago else "Running — no checks done yet"
+                    send_telegram(body)
+                elif cmd == '/check':
+                    send_telegram("Forcing check now...")
+                    _force_check.set()
+                elif cmd == '/stop':
+                    send_telegram("Bot stopped.")
+                    os._exit(0)
+        except Exception as e:
+            logging.error(f"Command poll failed: {e}")
+
+        time.sleep(5)
+
     send_telegram("Bot stopped working... 😢")
 
 
 driver = init_browser()
+send_telegram("Bot started.\n/status — last check result\n/check — force check now\n/stop — stop the bot")
 main = threading.Thread(target=startBot, args=(driver,), daemon=True)
 tracker = threading.Thread(target=Checker, args=(main,), daemon=True)
 
